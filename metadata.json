@@ -1,0 +1,8 @@
+{
+  "name": "Remix: Financial Portfolio Tracker",
+  "description": "A comprehensive financial portfolio tracker with CAS statement importing, manual asset additions (gold, real estate, fixed deposits), long-term goal mapping, and interactive visual dashboards for asset allocation and goal progress.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
