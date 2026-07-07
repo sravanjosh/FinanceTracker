@@ -4,7 +4,7 @@ import { Asset, CASParseResult } from '../types';
 import { stripRTF, pruneCasText } from '../utils/rtfStripper';
 
 interface CASImporterProps {
-  onImportSuccess: (assets: Omit<Asset, 'id' | 'mappedGoalId' | 'lastUpdated'>[], investorDetails?: { name: string; email: string; pan: string }) => void;
+  onImportSuccess: (assets: Omit<Asset, 'id' | 'mappedGoalId' | 'lastUpdated'>[], investorDetails?: { name: string; email: string; pan: string }, parserUsed?: string) => void;
 }
 
 export default function CASImporter({ onImportSuccess }: CASImporterProps) {
@@ -103,7 +103,7 @@ export default function CASImporter({ onImportSuccess }: CASImporterProps) {
           name: result.investorName || "",
           email: result.email || "",
           pan: result.pan || ""
-        });
+        }, result.parserUsed);
       } else {
         throw new Error(result.error || "Failed to parse data");
       }

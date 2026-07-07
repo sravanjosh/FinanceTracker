@@ -183,6 +183,7 @@ app.post("/api/parse-cas", async (req, res) => {
       const localResult = parseCASLocally(text);
       if (localResult && localResult.assets && localResult.assets.length > 0) {
         console.log(`Successfully parsed CAS statement locally using offline regex parser fallback (${localResult.assets.length} assets found).`);
+        localResult.parserUsed = "Local Static Regex Parser (Offline Mode)";
         return localResult;
       }
     } catch (localErr: any) {
@@ -191,107 +192,262 @@ app.post("/api/parse-cas", async (req, res) => {
     return null;
   };
 
-  // If Gemini API Key is missing, try parsing locally before throwing error
-  if (!process.env.GEMINI_API_KEY) {
-    console.warn("No GEMINI_API_KEY found, attempting local parsing fallback...");
+  // Identify available keys
+  const hasGemini = !!process.env.GEMINI_API_KEY;
+  const hasOpenAI = !!process.env.OPENAI_API_KEY;
+  const hasAnthropic = !!process.env.ANTHROPIC_API_KEY;
+
+  // If no API keys are configured, automatically perform local static parsing
+  if (!hasGemini && !hasOpenAI && !hasAnthropic) {
+    console.log("No API keys found for Gemini, OpenAI, or Anthropic. Executing automatic local static parsing...");
     const localParsed = tryLocalFallback();
     if (localParsed) {
       return res.json(localParsed);
     }
     return res.status(400).json({
       success: false,
-      error: "Gemini API key is not configured in the environment. Please define GEMINI_API_KEY in your application environment or settings to enable real AI statement parsing."
+      error: "No AI API keys are configured (GEMINI_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY) and the local static parser could not extract any assets. Please configure an API key or ensure the copied text matches standard CAS text layouts."
     });
   }
 
-  try {
-    const ai = getAiClient();
-    const prompt = `
-      You are an expert financial document parsing system. 
-      You are given the raw extracted text of a CAS (Common Account Statement) from CAMs or CDSL/NSDL/KFintech.
-      Your task is to parse this text and extract all mutual fund investments, stock holdings, and investor details.
-      
-      Extract:
-      - investorName: Name of first holder
-      - email: Registered email address
-      - pan: PAN number of investor
-      - assets: Array of active holdings (units > 0). If you find multiple transaction pages, aggregate them by scheme/stock and calculate the total units, latest NAV (currentPrice) and current value.
+  // List of providers to attempt in priority order based on available keys
+  const attempts: Array<{ name: string; run: () => Promise<any> }> = [];
 
-      Here is the extracted CAS text:
-      ---
-      ${text}
-      ---
-    `;
+  if (hasGemini) {
+    attempts.push({
+      name: "Gemini 3.5 Flash",
+      run: async () => {
+        const ai = getAiClient();
+        const prompt = `
+          You are an expert financial document parsing system. 
+          You are given the raw extracted text of a CAS (Common Account Statement) from CAMs or CDSL/NSDL/KFintech.
+          Your task is to parse this text and extract all mutual fund investments, stock holdings, and investor details.
+          
+          Extract:
+          - investorName: Name of first holder
+          - email: Registered email address
+          - pan: PAN number of investor
+          - assets: Array of active holdings (units > 0). If you find multiple transaction pages, aggregate them by scheme/stock and calculate the total units, latest NAV (currentPrice) and current value.
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            success: { type: Type.BOOLEAN },
-            investorName: { type: Type.STRING },
-            email: { type: Type.STRING },
-            pan: { type: Type.STRING },
-            assets: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  name: { type: Type.STRING, description: "Full official name of the Mutual Fund scheme or Stock EQ" },
-                  type: { type: Type.STRING, description: "Either 'mutual_fund' or 'stock'" },
-                  category: { type: Type.STRING, description: "Either 'Equity' or 'Debt' or 'Hybrid'" },
-                  units: { type: Type.NUMBER, description: "Total units held" },
-                  purchasePrice: { type: Type.NUMBER, description: "Average purchase cost per unit. Fallback to currentPrice * 0.82 if not found." },
-                  currentPrice: { type: Type.NUMBER, description: "Latest NAV or closing price" },
-                  value: { type: Type.NUMBER, description: "Total valuation (units * currentPrice)" },
-                  folio: { type: Type.STRING, description: "Folio number or Demat Client ID if found" },
-                  institution: { type: Type.STRING, description: "Name of the AMC or Mutual Fund house" }
-                },
-                required: ["name", "type", "category", "units", "currentPrice", "value"]
-              }
+          Here is the extracted CAS text:
+          ---
+          ${text}
+          ---
+        `;
+
+        const response = await ai.models.generateContent({
+          model: "gemini-3.5-flash",
+          contents: prompt,
+          config: {
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                success: { type: Type.BOOLEAN },
+                investorName: { type: Type.STRING },
+                email: { type: Type.STRING },
+                pan: { type: Type.STRING },
+                assets: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      name: { type: Type.STRING, description: "Full official name of the Mutual Fund scheme or Stock EQ" },
+                      type: { type: Type.STRING, description: "Either 'mutual_fund' or 'stock'" },
+                      category: { type: Type.STRING, description: "Either 'Equity' or 'Debt' or 'Hybrid'" },
+                      units: { type: Type.NUMBER, description: "Total units held" },
+                      purchasePrice: { type: Type.NUMBER, description: "Average purchase cost per unit. Fallback to currentPrice * 0.82 if not found." },
+                      currentPrice: { type: Type.NUMBER, description: "Latest NAV or closing price" },
+                      value: { type: Type.NUMBER, description: "Total valuation (units * currentPrice)" },
+                      folio: { type: Type.STRING, description: "Folio number or Demat Client ID if found" },
+                      institution: { type: Type.STRING, description: "Name of the AMC or Mutual Fund house" }
+                    },
+                    required: ["name", "type", "category", "units", "currentPrice", "value"]
+                  }
+                }
+              },
+              required: ["success", "assets"]
             }
-          },
-          required: ["success", "assets"]
-        }
+          }
+        });
+
+        const parsed = JSON.parse(response.text || "{}");
+        parsed.parserUsed = "Gemini 3.5 Flash";
+        return parsed;
       }
     });
+  }
 
-    const parsedJson = JSON.parse(response.text || "{}");
-    return res.json(parsedJson);
+  if (hasOpenAI) {
+    attempts.push({
+      name: "OpenAI GPT-4o-mini",
+      run: async () => {
+        const response = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
+          },
+          body: JSON.stringify({
+            model: "gpt-4o-mini",
+            response_format: { type: "json_object" },
+            messages: [
+              {
+                role: "system",
+                content: `You are an expert financial document parsing system. Extract:
+- investorName: Name of first holder (string or empty)
+- email: Registered email address (string or empty)
+- pan: PAN number of investor (string or empty)
+- assets: Array of active holdings (units > 0), aggregated by scheme/stock name.
+Each asset item must have:
+- name: Full official name of the Mutual Fund scheme or Stock EQ
+- type: Either 'mutual_fund' or 'stock'
+- category: Either 'Equity' or 'Debt' or 'Hybrid'
+- units: Total units held (number)
+- purchasePrice: Average purchase cost per unit. Fallback to currentPrice * 0.82 if not found (number)
+- currentPrice: Latest NAV or closing price (number)
+- value: Total valuation (units * currentPrice) (number)
+- folio: Folio number or Demat Client ID if found (string or empty)
+- institution: Name of the AMC or Mutual Fund house (string or empty)
 
-  } catch (error: any) {
-    console.error("Gemini CAS Parsing Error:", error);
-    
-    // In case of any error (network timeout, API error, rate limit, fetch failure), try the local fallback first!
-    const localParsed = tryLocalFallback();
-    if (localParsed) {
-      return res.json(localParsed);
-    }
+Return a valid JSON object matching this schema:
+{
+  "success": true,
+  "investorName": "...",
+  "email": "...",
+  "pan": "...",
+  "assets": [
+    { "name": "...", "type": "...", "category": "...", "units": ..., "purchasePrice": ..., "currentPrice": ..., "value": ..., "folio": "...", "institution": "..." }
+  ]
+}`
+              },
+              {
+                role: "user",
+                content: text
+              }
+            ]
+          })
+        });
 
-    let userFriendlyError = `Failed to parse CAS statement: ${error.message || "Unknown error"}. Please check the text format or try copying and pasting again.`;
-    
-    // Check if it's a fetch or connection-related error (offline, firewall, DNS, proxy, etc.)
-    const errStr = (String(error.message || "") + " " + String(error.stack || "") + " " + String(error.code || "")).toLowerCase();
-    if (
-      errStr.includes("fetch failed") || 
-      errStr.includes("econnrefused") || 
-      errStr.includes("enotfound") || 
-      errStr.includes("timeout") || 
-      errStr.includes("und_err_connect") ||
-      errStr.includes("network")
-    ) {
-      userFriendlyError = "Connection to Gemini API failed (fetch failed / timeout). The server was unable to contact Google's Gemini servers at generativelanguage.googleapis.com. Please ensure your machine has active internet access, no firewalls/proxies are blocking outbound HTTPS connections, and your GEMINI_API_KEY is correct. (Note: You can still use the 'Load Interactive Demo CAS' button to test the app features offline without any API connection!).";
-    }
+        if (!response.ok) {
+          throw new Error(`OpenAI API returned HTTP ${response.status}`);
+        }
 
-    return res.status(500).json({
-      success: false,
-      error: userFriendlyError,
-      details: error.message
+        const data: any = await response.json();
+        const content = data?.choices?.[0]?.message?.content;
+        if (!content) {
+          throw new Error("Empty response from OpenAI");
+        }
+
+        const parsed = JSON.parse(content);
+        parsed.parserUsed = "OpenAI GPT-4o-mini";
+        return parsed;
+      }
     });
   }
+
+  if (hasAnthropic) {
+    attempts.push({
+      name: "Anthropic Claude 3.5 Sonnet",
+      run: async () => {
+        const response = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: {
+            "x-api-key": process.env.ANTHROPIC_API_KEY || "",
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json"
+          },
+          body: JSON.stringify({
+            model: "claude-3-5-sonnet-20241022",
+            max_tokens: 4000,
+            system: `You are an expert financial document parsing system. Extract data and return a JSON object ONLY. 
+Structure:
+{
+  "success": true,
+  "investorName": "...",
+  "email": "...",
+  "pan": "...",
+  "assets": [
+    { "name": "...", "type": "...", "category": "...", "units": ..., "purchasePrice": ..., "currentPrice": ..., "value": ..., "folio": "...", "institution": "..." }
+  ]
+}`,
+            messages: [
+              {
+                role: "user",
+                content: text
+              }
+            ]
+          })
+        });
+
+        if (!response.ok) {
+          throw new Error(`Anthropic API returned HTTP ${response.status}`);
+        }
+
+        const data: any = await response.json();
+        const textContent = data?.content?.[0]?.text;
+        if (!textContent) {
+          throw new Error("Empty response from Anthropic");
+        }
+
+        // Clean any potential XML wrapper / markdown block
+        let cleanJson = textContent.trim();
+        if (cleanJson.startsWith("```json")) {
+          cleanJson = cleanJson.substring(7, cleanJson.lastIndexOf("```")).trim();
+        } else if (cleanJson.startsWith("```")) {
+          cleanJson = cleanJson.substring(3, cleanJson.lastIndexOf("```")).trim();
+        }
+
+        const parsed = JSON.parse(cleanJson);
+        parsed.parserUsed = "Anthropic Claude 3.5 Sonnet";
+        return parsed;
+      }
+    });
+  }
+
+  // Execute attempts in order, healing if any fail
+  let lastError: any = null;
+  for (const attempt of attempts) {
+    try {
+      console.log(`Attempting parsing with ${attempt.name}...`);
+      const result = await attempt.run();
+      if (result && result.success && result.assets && result.assets.length > 0) {
+        console.log(`Successfully parsed CAS statement using ${attempt.name}!`);
+        return res.json(result);
+      }
+    } catch (err: any) {
+      console.warn(`Parsing with ${attempt.name} failed:`, err.message || err);
+      lastError = err;
+    }
+  }
+
+  // If all AI attempts failed (timeout, network, or server/API issues), automatically try the local offline fallback
+  console.warn("All configured AI parsers failed. Attempting local parsing fallback...");
+  const localParsed = tryLocalFallback();
+  if (localParsed) {
+    return res.json(localParsed);
+  }
+
+  // If even the local parser failed, return the details of the AI error
+  let userFriendlyError = `Failed to parse CAS statement: ${lastError?.message || "Unknown error"}. Please check the text format or try copying and pasting again.`;
+  const errStr = (String(lastError?.message || "") + " " + String(lastError?.stack || "") + " " + String(lastError?.code || "")).toLowerCase();
+  
+  if (
+    errStr.includes("fetch failed") || 
+    errStr.includes("econnrefused") || 
+    errStr.includes("enotfound") || 
+    errStr.includes("timeout") || 
+    errStr.includes("und_err_connect") ||
+    errStr.includes("network")
+  ) {
+    userFriendlyError = "Connection to AI APIs failed (fetch failed / timeout / offline). The server was unable to contact the external AI model servers. Please ensure your host machine has active internet access and no firewalls or proxies are blocking outbound HTTPS requests. (Note: You can still use the 'Load Interactive Demo CAS' button to test the app features completely offline without any API keys!).";
+  }
+
+  return res.status(500).json({
+    success: false,
+    error: userFriendlyError,
+    details: lastError?.message || "All attempts failed"
+  });
 });
 
 // Robust local regex-based CAS parser for offline, firewalled, or private setups

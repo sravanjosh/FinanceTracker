@@ -267,7 +267,8 @@ export default function App() {
   const handleImportCASSuccess = (
     parsedAssets: Omit<Asset, 'id' | 'mappedGoalId' | 'lastUpdated' | 'ownerName'>[],
     details?: { name: string; email: string; pan: string },
-    targetOwnerName: string = primaryProfileName
+    targetOwnerName: string = primaryProfileName,
+    parserUsed?: string
   ) => {
     const fullAssets: Asset[] = parsedAssets.map((pa, idx) => ({
       ...pa,
@@ -296,7 +297,8 @@ export default function App() {
         } : prev;
       });
     }
-    triggerNotif(`CAS statement processed! Mutual funds compiled & allocated successfully for ${targetOwnerName}.`);
+    const engineLabel = parserUsed ? ` (parsed via ${parserUsed})` : "";
+    triggerNotif(`CAS statement processed${engineLabel}! ${parsedAssets.length} mutual funds successfully compiled & allocated for ${targetOwnerName}.`);
   };
 
   const forceRefreshPrices = () => {

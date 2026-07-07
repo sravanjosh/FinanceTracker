@@ -11,7 +11,7 @@ interface AssetManagerProps {
   onAddAsset: (asset: Omit<Asset, 'id' | 'lastUpdated'>) => void;
   onDeleteAsset: (id: string) => void;
   onUpdateAsset: (id: string, updated: Partial<Asset>) => void;
-  onImportCASSuccess?: (parsedAssets: Omit<Asset, 'id' | 'mappedGoalId' | 'lastUpdated' | 'ownerName'>[], details?: { name: string; email: string; pan: string }, targetOwnerName?: string) => void;
+  onImportCASSuccess?: (parsedAssets: Omit<Asset, 'id' | 'mappedGoalId' | 'lastUpdated' | 'ownerName'>[], details?: { name: string; email: string; pan: string }, targetOwnerName?: string, parserUsed?: string) => void;
   selectedMember: string;
   settings?: UserSettings;
   usdInrRate?: number;
@@ -893,8 +893,8 @@ export default function AssetManager({
             ) : (
               <div className="space-y-4">
                 {onImportCASSuccess ? (
-                  <CASImporter onImportSuccess={(parsedAssets, details) => {
-                    onImportCASSuccess(parsedAssets, details, importOwner);
+                  <CASImporter onImportSuccess={(parsedAssets, details, parserUsed) => {
+                    onImportCASSuccess(parsedAssets, details, importOwner, parserUsed);
                   }} />
                 ) : (
                   <div className="p-4 text-xs text-slate-500 bg-amber-50 border border-amber-200 rounded-xl">
